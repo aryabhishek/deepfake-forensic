@@ -105,12 +105,10 @@ training_args = TrainingArguments(
     per_device_train_batch_size=8,
     per_device_eval_batch_size=8,
     num_train_epochs=3,
-    evaluation_strategy="epoch",
-    save_strategy="epoch",
     logging_dir="./logs",
     logging_steps=10,
     load_best_model_at_end=True,
-    metric_for_best_model="eval_loss",
+    # Remove unsupported arguments for older transformers
 )
 
 trainer = Trainer(
