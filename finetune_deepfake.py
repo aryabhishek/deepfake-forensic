@@ -1,23 +1,71 @@
+
+# Updated: Extract frames from videos and use them for training
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 from transformers import AutoImageProcessor, ViTForImageClassification, TrainingArguments, Trainer
 from PIL import Image
 import os
+import cv2
+import glob
 
-# Example custom dataset for deepfake detection
-default_label_map = {"real": 0, "fake": 1}
+DATASET_DIR = r"E:\dsu_projects\deepfake-forensic\FaceForensics++_C23"
+REAL_DIR = os.path.join(DATASET_DIR, "original")
+FAKE_DIRS = [
+    os.path.join(DATASET_DIR, "Deepfakes"),
+    os.path.join(DATASET_DIR, "FaceSwap"),
+    os.path.join(DATASET_DIR, "Face2Face"),
+    os.path.join(DATASET_DIR, "NeuralTextures"),
+    os.path.join(DATASET_DIR, "DeepFakeDetection")
+]
 
-class DeepfakeDataset(Dataset):
-    def __init__(self, image_dir, label_map=default_label_map, processor=None):
-        self.image_dir = image_dir
-        self.label_map = label_map
+# Directory to store extracted frames
+FRAME_DIR = os.path.join(DATASET_DIR, "frames")
+os.makedirs(FRAME_DIR, exist_ok=True)
+
+def extract_frames(video_path, out_dir, num_frames=5):
+    os.makedirs(out_dir, exist_ok=True)
+    cap = cv2.VideoCapture(video_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if frame_count == 0:
+        cap.release()
+        return []
+    step = max(1, frame_count // num_frames)
+    frames = []
+    for i in range(0, frame_count, step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        ret, frame = cap.read()
+        if ret:
+            frame_file = os.path.join(out_dir, f"frame_{i}.jpg")
+            cv2.imwrite(frame_file, frame)
+            frames.append(frame_file)
+        if len(frames) >= num_frames:
+            break
+    cap.release()
+    return frames
+
+def prepare_frame_dataset():
+    samples = []
+    # Real videos
+    for vid in glob.glob(os.path.join(REAL_DIR, "*.mp4")):
+        vid_name = os.path.splitext(os.path.basename(vid))[0]
+        out_dir = os.path.join(FRAME_DIR, f"real_{vid_name}")
+        frames = extract_frames(vid, out_dir)
+        for f in frames:
+            samples.append((f, 0))
+    # Fake videos
+    for fake_dir in FAKE_DIRS:
+        for vid in glob.glob(os.path.join(fake_dir, "*.mp4")):
+            vid_name = os.path.splitext(os.path.basename(vid))[0]
+            out_dir = os.path.join(FRAME_DIR, f"fake_{vid_name}")
+            frames = extract_frames(vid, out_dir)
+            for f in frames:
+                samples.append((f, 1))
+    return samples
+
+class DeepfakeFrameDataset(Dataset):
+    def __init__(self, samples, processor=None):
+        self.samples = samples
         self.processor = processor or AutoImageProcessor.from_pretrained('facebook/deit-small-patch16-224')
-        self.samples = []
-        for label in os.listdir(image_dir):
-            label_path = os.path.join(image_dir, label)
-            if os.path.isdir(label_path):
-                for img_name in os.listdir(label_path):
-                    self.samples.append((os.path.join(label_path, img_name), self.label_map[label]))
 
     def __len__(self):
         return len(self.samples)
@@ -30,21 +78,18 @@ class DeepfakeDataset(Dataset):
         inputs["labels"] = torch.tensor(label)
         return inputs
 
-# Paths to your dataset
-data_dir = "./deepfake_data"  # Should contain 'real/' and 'fake/' subfolders
-
-# Load processor and model
 processor = AutoImageProcessor.from_pretrained('facebook/deit-small-patch16-224')
 model = ViTForImageClassification.from_pretrained(
     'facebook/deit-small-patch16-224',
     num_labels=2,
     id2label={0: "real", 1: "fake"},
-    label2id={"real": 0, "fake": 1}
+    label2id={"real": 0, "fake": 1},
+    ignore_mismatched_sizes=True
 )
 
-dataset = DeepfakeDataset(data_dir, processor=processor)
+samples = prepare_frame_dataset()
+dataset = DeepfakeFrameDataset(samples, processor=processor)
 
-# Split dataset (simple split, replace with your own logic as needed)
 train_size = int(0.8 * len(dataset))
 val_size = len(dataset) - train_size
 train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
